@@ -14,7 +14,7 @@ from tkinter import ttk
 from localization import Language, Localized
 from web_health import ADMIN_URL, WEB_REFRESH_MS, check_admin_web
 
-VERSION = '1.1.0'
+VERSION = '1.1.1'
 GITHUB_PROFILE = 'https://github.com/AydinFatoglu'
 REPOSITORY_URL = GITHUB_PROFILE + '/HorizonServiceMonitor'
 REFRESH_MS = 30_000
@@ -229,6 +229,86 @@ class UiDispatch:
         self.closed=True
         self._ui_widget.after_cancel(self._poll_id)
 
+class GridTreeview(ttk.Treeview):
+    """Keep native selection and scrolling, with thin cell separators."""
+    def __init__(self, master, **options):
+        super().__init__(master, **options)
+        self._grid_after = None
+        self._grid_lines = []
+        for event in ('<Configure>', '<Expose>', '<MouseWheel>', '<KeyRelease>', '<ButtonRelease-1>'):
+            self.bind(event, self._schedule_grid, add='+')
+        self.bind('<Destroy>', self._destroy_grid, add='+')
+
+    def _schedule_grid(self, event=None):
+        if self._grid_after is None:
+            self._grid_after = self.after_idle(self._draw_grid)
+
+    def _destroy_grid(self, event):
+        if event.widget is self and self._grid_after is not None:
+            self.after_cancel(self._grid_after)
+            self._grid_after = None
+
+    def _draw_grid(self):
+        self._grid_after = None
+        height, width = self.winfo_height(), self.winfo_width()
+        # Inspect only visible rows, regardless of the number of Event records.
+        rows = list(dict.fromkeys(self.identify_row(y) for y in range(0, height, 4)))
+        boxes = [(iid, self.bbox(iid)) for iid in rows if iid]
+        boxes = [(iid, box) for iid, box in boxes if box]
+        positions = []
+        if boxes:
+            top = max(1, boxes[0][1][1])
+            bottom = min(height - 1, boxes[-1][1][1] + boxes[-1][1][3])
+            for _, (x, y, row_width, row_height) in boxes:
+                edge = y + row_height - 1
+                if top <= edge < height:
+                    positions.append((max(1, x), edge, min(row_width, width - 2), 1))
+            columns = self['displaycolumns']
+            if columns == ('#all',):
+                columns = self['columns']
+            for column in columns:
+                box = self.bbox(boxes[0][0], column)
+                if box:
+                    edge = box[0] + box[2] - 1
+                    if 0 < edge < width:
+                        positions.append((edge, top, 1, bottom - top))
+        while len(self._grid_lines) < len(positions):
+            line = tk.Frame(self, bg='#d6dde5', borderwidth=0, highlightthickness=0, takefocus=False)
+            # Border pixels should behave like the underlying table on click
+            # and wheel input rather than interrupting selection or scrolling.
+            for sequence in ('<Button-1>', '<ButtonRelease-1>', '<MouseWheel>'):
+                line.bind(sequence, lambda event, seq=sequence: self.event_generate(
+                    seq, x=event.x_root-self.winfo_rootx(), y=event.y_root-self.winfo_rooty(),
+                    time=event.time, state=event.state,
+                    **({'delta': event.delta} if seq == '<MouseWheel>' else {})))
+            self._grid_lines.append(line)
+        for line, (x, y, line_width, line_height) in zip(self._grid_lines, positions):
+            line.place(x=x, y=y, width=line_width, height=line_height)
+        for line in self._grid_lines[len(positions):]:
+            line.place_forget()
+
+    def insert(self, *args, **kwargs):
+        iid = super().insert(*args, **kwargs)
+        self._schedule_grid()
+        return iid
+
+    def delete(self, *items):
+        super().delete(*items)
+        self._schedule_grid()
+
+    def yview(self, *args):
+        result = super().yview(*args)
+        if args:
+            self._schedule_grid()
+        return result
+
+    def xview(self, *args):
+        result = super().xview(*args)
+        if args:
+            self._schedule_grid()
+        return result
+
+
 class EventWindow(UiDispatch, Localized):
     def __init__(self, master, name, display, path):
         self.win = tk.Toplevel(master)
@@ -277,7 +357,7 @@ class EventWindow(UiDispatch, Localized):
         table = ttk.Frame(parent)
         table.pack(fill='both', expand=True)
         cols = ('time', 'level', 'id', 'log', 'source')
-        tree = ttk.Treeview(table, columns=cols, show='headings', selectmode='browse', height=6)
+        tree = GridTreeview(table, columns=cols, show='headings', selectmode='browse', height=6)
         for col, title, width in [('time','time',165),('level','level',100),('id','event_id',90),('log','log',110),('source','source',420)]:
             self.heading(tree, col, title)
             tree.column(col, width=width, anchor='w', stretch=(col=='source'))
@@ -544,7 +624,7 @@ class Monitor(UiDispatch, Localized):
         self.web_health = WebHealthPanel(frame, root)
         table=ttk.Frame(frame);table.pack(fill='both',expand=True)
         cols=('name','display','state','start','pid')
-        self.tree=ttk.Treeview(table,columns=cols,show='headings',selectmode='browse')
+        self.tree=GridTreeview(table,columns=cols,show='headings',selectmode='browse')
         for col,title,width,anchor in [('name','name',175,'w'),('display','display',450,'w'),('state','state',130,'center'),('start','start',120,'center'),('pid','pid',80,'center')]:
             self.heading(self.tree,col,title);self.tree.column(col,width=width,minwidth=60,anchor=anchor,stretch=(col=='display'))
         scrollbar=ttk.Scrollbar(table,orient='vertical',command=self.tree.yview)
