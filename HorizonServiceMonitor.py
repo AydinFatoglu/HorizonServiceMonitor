@@ -12,8 +12,9 @@ import webbrowser
 from datetime import datetime
 from tkinter import ttk
 from localization import Language, Localized
+from web_health import ADMIN_URL, WEB_REFRESH_MS, check_admin_web
 
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 GITHUB_PROFILE = 'https://github.com/AydinFatoglu'
 REPOSITORY_URL = GITHUB_PROFILE + '/HorizonServiceMonitor'
 REFRESH_MS = 30_000
@@ -402,6 +403,81 @@ class EventWindow(UiDispatch, Localized):
             log=e.get('Log',''), record=e.get('RecordId',''),
             message=e.get('Message','') or self.t('no_message'), xml=e.get('Xml','')))
 
+class WebHealthPanel(UiDispatch, Localized):
+    def __init__(self, parent, master):
+        self.frame = ttk.LabelFrame(parent, padding=8)
+        self.frame.pack(fill='x', pady=(0, 10))
+        self.busy = False
+        self.after_id = None
+        self.result = None
+        self.checked_at = None
+        self.init_dispatch(self.frame)
+        self.init_language(master)
+        self.label(self.frame, 'web_title')
+        row = ttk.Frame(self.frame)
+        row.pack(fill='x')
+        ttk.Label(row, text=ADMIN_URL).pack(side='left')
+        self.button = self.label(ttk.Button(row, command=self.refresh), 'web_check')
+        self.button.pack(side='right')
+        self.info = tk.StringVar()
+        self.status_label = ttk.Label(self.frame, textvariable=self.info, wraplength=1000)
+        self.status_label.pack(anchor='w', pady=(4, 0))
+        self.label(ttk.Label(self.frame, foreground='#64748b', wraplength=1000), 'web_scope').pack(anchor='w', pady=(3, 0))
+        self.frame.bind('<Destroy>', lambda event: self.close() if event.widget is self.frame else None)
+        self.refresh()
+
+    def refresh(self):
+        if self.closed or self.busy:
+            return
+        if self.after_id is not None:
+            self.frame.after_cancel(self.after_id)
+            self.after_id = None
+        self.busy = True
+        self.button.configure(state='disabled')
+        self.update_language()
+        threading.Thread(target=self.worker, daemon=True).start()
+
+    def worker(self):
+        try:
+            result = check_admin_web()
+        except Exception as exc:
+            result = {'kind': 'connection_error', 'code': None, 'seconds': 0, 'detail': str(exc)}
+        self.safe_after(lambda: self.render(result))
+
+    def render(self, result):
+        if self.closed:
+            return
+        self.result = result
+        self.checked_at = datetime.now()
+        self.busy = False
+        self.button.configure(state='normal')
+        self.update_language()
+        # Start-to-start cadence, unless a slow check itself exceeded 45 sec.
+        delay = max(1, WEB_REFRESH_MS - round(result['seconds'] * 1000))
+        self.after_id = self.frame.after(delay, self.refresh)
+
+    def update_language(self):
+        if self.busy or self.result is None:
+            self.info.set(self.t('web_checking'))
+            self.status_label.configure(foreground='#64748b')
+            return
+        result = self.result
+        if result['kind'] == 'http':
+            key = 'web_up' if result['code'] == 200 else 'web_http_error'
+        else:
+            key = 'web_timeout' if result['kind'] == 'timeout' else 'web_connection_error'
+        state = self.t(key, code=result['code'])
+        self.info.set(self.t('web_result', state=state, time=self.checked_at.strftime('%d.%m.%Y %H:%M:%S'), seconds=result['seconds']))
+        self.status_label.configure(foreground='#16803d' if key == 'web_up' else '#b91c1c')
+
+    def close(self):
+        if self.closed:
+            return
+        if self.after_id is not None:
+            self.frame.after_cancel(self.after_id)
+        self.stop_dispatch()
+
+
 class AboutWindow(Localized):
     def __init__(self, master):
         self.closed = False
@@ -465,6 +541,7 @@ class Monitor(UiDispatch, Localized):
         self.event_button.pack(side='right',padx=(0,8))
         self.info=tk.StringVar()
         ttk.Label(frame,textvariable=self.info).pack(anchor='w',pady=(0,10))
+        self.web_health = WebHealthPanel(frame, root)
         table=ttk.Frame(frame);table.pack(fill='both',expand=True)
         cols=('name','display','state','start','pid')
         self.tree=ttk.Treeview(table,columns=cols,show='headings',selectmode='browse')
@@ -556,6 +633,7 @@ class Monitor(UiDispatch, Localized):
         if not self.closed:self.after_id=self.root.after(REFRESH_MS,self.refresh)
 
     def close(self):
+        self.web_health.close()
         self.stop_dispatch()
         if self.after_id is not None:self.root.after_cancel(self.after_id)
         self.root.destroy()

@@ -179,9 +179,12 @@ class GuiTests(unittest.TestCase):
     def setUp(self):
         self.root = h.tk.Tk()
         self.root.withdraw()
+        self.web_probe = patch.object(h, 'check_admin_web', return_value={'kind': 'http', 'code': 200, 'seconds': .01, 'detail': ''})
+        self.web_probe.start()
 
     def tearDown(self):
         self.root.destroy()
+        self.web_probe.stop()
         # Release destroyed Tcl interpreters on their owning thread before the
         # next test starts another worker (which can otherwise trigger GC).
         gc.collect()
