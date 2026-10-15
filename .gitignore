@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.log
+# Keep historical working copies locally.
+HorizonServiceMonitor([0-9]*).py
